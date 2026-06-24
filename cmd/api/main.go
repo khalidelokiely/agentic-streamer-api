@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"nrt-agentic-streamer-api/internal/platform"
+	"os"
 	"time"
 
 	"github.com/cloudwego/hertz/pkg/app/server"
@@ -24,7 +25,12 @@ func main() {
 
 		// create a hertz server and add lifecycle events to it and provide it
 		fx.Provide(func(lc fx.Lifecycle) *server.Hertz {
-			h := server.Default(server.WithHostPorts(":80"))
+			port := os.Getenv("PORT")
+			if port == "" {
+				port = "80"
+			}
+
+			h := server.Default(server.WithHostPorts(":" + port))
 
 			h.Use(cors.New(cors.Config{
 				AllowOrigins: []string{
