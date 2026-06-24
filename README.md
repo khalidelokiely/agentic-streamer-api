@@ -6,6 +6,8 @@ A high-performance REST API backend for live agentic updates powered by Go and s
 
 **Production URL:** https://agentic-streamer-api-production.up.railway.app/
 
+> **Note:** Currently, the service seeds and generates fake run events for demo purposes. See [Future Enhancements](#-future-enhancements) for the planned push-based event ingestion endpoint.
+
 ## Features
 
 - **Real-time SSE Streaming** - Stream agent execution events to multiple clients simultaneously with buffered channels to prevent blocking
@@ -57,6 +59,12 @@ All endpoints are prefixed with `/v1/agents`
 
 ## 🔌 API Examples
 
+### Get Available Agents
+
+```bash
+curl "https://agentic-streamer-api-production.up.railway.app/v1/agents"
+```
+
 ### Connect to Event Stream
 
 ```bash
@@ -72,23 +80,29 @@ curl -X POST "https://agentic-streamer-api-production.up.railway.app/v1/agents/w
     "client_id": "client-123",
     "agents": [
       {
-        "id": "agent-1",
+        "id": "codepal-v1",
         "latest_only": false
       }
     ]
   }'
 ```
 
-### Get Available Agents
+### Get Runs for a Specific Agent
 
 ```bash
-curl "https://agentic-streamer-api-production.up.railway.app/v1/agents"
+curl "https://agentic-streamer-api-production.up.railway.app/v1/agents/codepal-v1/runs"
+```
+
+### Get Events for a Specific Agent Run
+
+```bash
+curl "https://agentic-streamer-api-production.up.railway.app/v1/agents/codepal-v1/runs/run_uuid_10000/events"
 ```
 
 ### Unsubscribe from Agent
 
 ```bash
-curl -X DELETE "https://agentic-streamer-api-production.up.railway.app/v1/agents/watch/agent-1?clientId=client-123"
+curl -X DELETE "https://agentic-streamer-api-production.up.railway.app/v1/agents/watch/codepal-v1?clientId=client-123"
 ```
 
 ## 🏗️ Project Structure
@@ -145,6 +159,29 @@ The API will start on `http://localhost:80` by default. You can override the por
 PORT=8080 ./out
 ```
 
+### Testing the Local Deployment
+
+```bash
+# In one terminal, start the server
+PORT=8080 ./out
+
+# In another terminal, subscribe to demo events
+curl -X POST "http://localhost:8080/v1/agents/watch" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "client_id": "local-client",
+    "agents": [
+      {
+        "id": "codepal-v1",
+        "latest_only": false
+      }
+    ]
+  }'
+
+# In yet another terminal, connect to the event stream
+curl -N "http://localhost:8080/v1/agents/sse?clientId=local-client"
+```
+
 ## 🚀 Deployment
 
 This project is configured for deployment on Railway.app using NixPacks.
@@ -173,7 +210,7 @@ Events streamed through SSE follow this structure:
 
 ```json
 {
-  "agent_run_id": "agent-1:run-123",
+  "agent_run_id": "codepal-v1:run_uuid_10000",
   "node_name": "llm_call",
   "status": "EXECUTING",
   "payload": "Node [llm_call] transitioned to state [EXECUTING]",
@@ -190,7 +227,7 @@ Subscribe to agent updates with:
   "client_id": "client-123",
   "agents": [
     {
-      "id": "agent-1",
+      "id": "codepal-v1",
       "latest_only": false
     }
   ]
@@ -240,7 +277,7 @@ ulid, err := ulid.New(ms, entropy)
 This API is designed to work with:
 - **Frontend:** [Agentic Streamer UI](https://agentic-streamer-ui-react.vercel.app) (React)
 - **Agent Framework:** LangChain, AutoGen, or custom agent implementations
-- **Event Sources:** Any service that can POST agent run snapshots
+- **Event Sources:** Currently seeds demo events; push-based ingestion coming soon (see Future Enhancements)
 
 ## 📝 License
 
@@ -252,6 +289,7 @@ For bugs, feature requests, or questions, please open an issue on [GitHub](https
 
 ## 🎯 Future Enhancements
 
+- [ ] **Push-based Event Ingestion Endpoint** - Create a dedicated endpoint for external services (LangChain, AutoGen, etc.) to push agent run events into the streamer instead of relying on seeded demo data
 - [ ] Persistent storage backend (PostgreSQL/MongoDB)
 - [ ] Authentication & authorization layer
 - [ ] Event filtering and query capabilities
