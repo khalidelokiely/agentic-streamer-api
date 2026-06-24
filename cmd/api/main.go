@@ -6,6 +6,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/app/server"
 	"github.com/hertz-contrib/cors"
 	"go.uber.org/fx"
@@ -43,6 +44,11 @@ func main() {
 				AllowCredentials: false,
 				MaxAge:           12 * time.Hour,
 			}))
+
+			// Health check path
+			h.GET("/health", func(ctx context.Context, c *app.RequestContext) {
+				c.String(200, "OK")
+			})
 
 			lc.Append(fx.Hook{
 				OnStart: func(ctx context.Context) error {
