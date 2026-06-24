@@ -76,7 +76,7 @@ func (b *Broker) Start() {
 
 		case event := <-b.incomingEventQueue:
 			// FIXED: Pass the address of the loop value safely
-			b.notifyClientChannels(new(event))
+			b.notifyClientChannels(&event)
 
 		case msg := <-b.removeClientQueue:
 			b.processRemoveClientRequest(msg)

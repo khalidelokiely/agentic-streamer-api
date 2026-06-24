@@ -1,6 +1,6 @@
 module nrt-agentic-streamer-api
 
-go 1.26
+go 1.23
 
 require (
 	github.com/cloudwego/hertz v0.10.4
