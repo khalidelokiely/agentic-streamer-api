@@ -1,6 +1,7 @@
-# 1. Add railway.toml to repo root
 [build]
 builder = "nixpacks"
+buildCommand = "go build -o out ./cmd/api/main.go"
 
 [deploy]
-startCommand = "go run ./cmd/api/main.go"
+startCommand = "./out"
+healthcheckPath = "/"
