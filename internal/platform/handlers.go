@@ -64,7 +64,7 @@ func (h *Handler) SSE(ctx context.Context, c *app.RequestContext) {
 	h.broker.AddClient(clientId, clientChannel)
 
 	// 3. CRITICAL FIX: Clean up the broker registry automatically when the handler exits!
-	defer h.broker.RemoveClient(clientId)
+	defer h.broker.RemoveClient(clientId, clientChannel)
 
 	// Send initial handshake to establish connection visibility
 	if err := w.WriteEvent("0", "HELLO", []byte("Hello Visitor")); err != nil {
@@ -86,6 +86,7 @@ func (h *Handler) SSE(ctx context.Context, c *app.RequestContext) {
 			// Execute write operation
 			err := w.WriteEvent(generateULID(), "SSE_EVENT_AGENT_RUN_WATCH", event.Bytes())
 			if err != nil {
+				fmt.Println(clientChannel)
 				// 4. CRITICAL FIX: Changed 'continue' to 'return'.
 				// If a write fails, the connection is dead. We must clean up and terminate.
 				fmt.Printf("Client connection lost. Terminating stream: %v, Client: %s\n", err, clientId)

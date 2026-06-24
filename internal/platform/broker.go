@@ -12,6 +12,7 @@ type client struct {
 	channel    chan Event
 	watchList  map[string]bool // Tracks which agents this specific client is watching
 	exclusions map[string]bool
+	clientID   string
 }
 
 type UnwatchRequest struct {
@@ -35,7 +36,7 @@ type Broker struct {
 	watchQueue         chan WatchRequest
 	unwatchQueue       chan UnwatchRequest
 	incomingEventQueue chan Event
-	removeClientQueue  chan string
+	removeClientQueue  chan clientConnectMsg
 	addClientQueue     chan clientConnectMsg // New queue to eliminate the HTTP thread race
 
 	agentDaemon DaemonController
@@ -46,7 +47,7 @@ func NewBroker(agentDaemon DaemonController) *Broker {
 		watchQueue:         make(chan WatchRequest, 100),
 		unwatchQueue:       make(chan UnwatchRequest, 100),
 		incomingEventQueue: make(chan Event, 100),
-		removeClientQueue:  make(chan string, 100),
+		removeClientQueue:  make(chan clientConnectMsg, 100),
 		addClientQueue:     make(chan clientConnectMsg, 100),
 		agentDaemon:        agentDaemon,
 	}
@@ -75,10 +76,10 @@ func (b *Broker) Start() {
 
 		case event := <-b.incomingEventQueue:
 			// FIXED: Pass the address of the loop value safely
-			b.notifyClientChannels(&event)
+			b.notifyClientChannels(new(event))
 
-		case clientId := <-b.removeClientQueue:
-			b.processRemoveClientRequest(clientId)
+		case msg := <-b.removeClientQueue:
+			b.processRemoveClientRequest(msg)
 
 		case req := <-b.unwatchQueue:
 			b.processUnwatchRequest(req)
@@ -156,18 +157,42 @@ func (b *Broker) processAddClient(clientID string, ch chan Event) {
 	nextClients := maps.Clone(current.clients)
 	nextWatchList := maps.Clone(current.agentWatchList)
 
-	// make the mutation on the copy
-	nextClients[clientID] = &client{
-		channel:    ch,
-		watchList:  make(map[string]bool),
-		exclusions: make(map[string]bool),
+	oldClient, exists := nextClients[clientID]
+
+	if !exists {
+		nextClients[clientID] = &client{
+			channel:    ch,
+			watchList:  make(map[string]bool),
+			exclusions: make(map[string]bool),
+		}
+	} else {
+		// 1. DEEP CLONE THE CLIENT STRUCT TO PREVENT SNAPSHOT CORRUPTION
+		clonedClient := &client{
+			channel:    ch, // Bind the real, live SSE channel now
+			watchList:  maps.Clone(oldClient.watchList),
+			exclusions: maps.Clone(oldClient.exclusions),
+		}
+		nextClients[clientID] = clonedClient
 	}
+	// make the mutation on the copy
 
 	// Atomically swap
 	b.routingTable.Store(&RoutingSnapshot{
 		clients:        nextClients,
 		agentWatchList: nextWatchList,
 	})
+
+	// 3. RE-HYDRATE HISTORICAL LOGS NOW THAT THE CHANNEL IS LIVE
+	if exists && len(oldClient.watchList) > 0 {
+		// We spin this off into a background worker so the broker can return instantly!
+		go func(clientCh chan Event, watchMap map[string]bool) {
+			for agentID := range watchMap {
+				if event := b.agentDaemon.QueryLatest(agentID); event != nil {
+					clientCh <- *event
+				}
+			}
+		}(ch, oldClient.watchList)
+	}
 }
 
 func (b *Broker) processWatchRequest(req WatchRequest) {
@@ -176,7 +201,11 @@ func (b *Broker) processWatchRequest(req WatchRequest) {
 	// 1. Check existence using the current snapshot first
 	oldClient, clientExists := current.clients[req.ClientID]
 	if !clientExists {
-		return
+		oldClient = &client{
+			channel:    nil,
+			watchList:  make(map[string]bool),
+			exclusions: make(map[string]bool),
+		}
 	}
 
 	// 2. Start with top-level shallow clones
@@ -213,28 +242,27 @@ func (b *Broker) processWatchRequest(req WatchRequest) {
 	})
 
 	// Fetch query logs and pass to notifications
-	for _, agent := range req.Agents {
-		if agent.LatestOnly {
-			latestEvent := b.agentDaemon.QueryLatest(agent.ID)
-			if latestEvent != nil {
-				b.sendToClient(req.ClientID, latestEvent)
-			}
-		} else {
-			events := b.agentDaemon.Query(agent.ID, -1)
-
-			for _, event := range events {
-				b.sendToClient(req.ClientID, event)
+	if clonedClient.channel != nil {
+		for _, agent := range req.Agents {
+			if agent.LatestOnly {
+				if latestEvent := b.agentDaemon.QueryLatest(agent.ID); latestEvent != nil {
+					b.sendToClient(req.ClientID, latestEvent)
+				}
 			}
 		}
 	}
 }
 
-func (b *Broker) processRemoveClientRequest(clientId string) {
+func (b *Broker) processRemoveClientRequest(c clientConnectMsg) {
 	// Get the current RoutingSnapshot
 	current := b.routingTable.Load().(*RoutingSnapshot)
 
-	oldClient, exists := current.clients[clientId]
+	oldClient, exists := current.clients[c.clientID]
 	if !exists {
+		return
+	}
+
+	if c.channel != oldClient.channel {
 		return
 	}
 
@@ -242,14 +270,14 @@ func (b *Broker) processRemoveClientRequest(clientId string) {
 	nextClients := maps.Clone(current.clients)
 	nextWatchList := maps.Clone(current.agentWatchList)
 
-	delete(nextClients, clientId) //remove the client from nextClients
+	delete(nextClients, c.clientID) //remove the client from nextClients
 
 	//With old reference to oldClient, we can go into nextWatchList and modify it. just make sure we copy the map in
 	// the key
 
 	for agentRunID, _ := range oldClient.watchList {
 		newWatchListForAgent := maps.Clone(current.agentWatchList[agentRunID])
-		delete(newWatchListForAgent, clientId)
+		delete(newWatchListForAgent, c.clientID)
 		if len(newWatchListForAgent) == 0 {
 			delete(nextWatchList, agentRunID)
 		} else {
@@ -340,8 +368,9 @@ func (b *Broker) AddClient(clientID string, ch chan Event) {
 	b.addClientQueue <- clientConnectMsg{clientID: clientID, channel: ch}
 }
 
-func (b *Broker) RemoveClient(clientID string) {
-	b.removeClientQueue <- clientID
+func (b *Broker) RemoveClient(clientID string, clientChan chan Event) {
+	clientDisconnectMsg := clientConnectMsg{clientID: clientID, channel: clientChan}
+	b.removeClientQueue <- clientDisconnectMsg
 }
 
 func (b *Broker) Unwatch(request UnwatchRequest) {

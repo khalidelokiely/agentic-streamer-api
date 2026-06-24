@@ -104,6 +104,7 @@ func (a *AgentDaemon) seedStaticAgents() {
 		runID := "run_uuid_10000"
 
 		a.addNewRun(agent.ID, runID, &AgentRunDetail{
+			AgentRunID:      fmt.Sprintf("%s:%s", agent.ID, runID),
 			TaskName:        "SEED_RUN",
 			TaskDescription: fmt.Sprintf("Seed Agent Run for Agent %v", agent.ID),
 			CreatedBy:       "SYSTEM_GENERATE",

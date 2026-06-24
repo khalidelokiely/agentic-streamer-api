@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"nrt-agentic-streamer-api/internal/platform"
+	"time"
 
 	"github.com/cloudwego/hertz/pkg/app/server"
+	"github.com/hertz-contrib/cors"
 	"go.uber.org/fx"
 )
 
@@ -23,6 +25,18 @@ func main() {
 		// create a hertz server and add lifecycle events to it and provide it
 		fx.Provide(func(lc fx.Lifecycle) *server.Hertz {
 			h := server.Default(server.WithHostPorts(":80"))
+
+			h.Use(cors.New(cors.Config{
+				AllowOrigins: []string{
+					"http://localhost:5173",
+					"https://your-vercel-app.vercel.app",
+				},
+				AllowMethods:     []string{"GET", "POST", "DELETE", "OPTIONS"},
+				AllowHeaders:     []string{"Origin", "Content-Type"},
+				ExposeHeaders:    []string{"Content-Type"},
+				AllowCredentials: false,
+				MaxAge:           12 * time.Hour,
+			}))
 
 			lc.Append(fx.Hook{
 				OnStart: func(ctx context.Context) error {
