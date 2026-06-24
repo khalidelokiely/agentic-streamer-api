@@ -36,7 +36,7 @@ func main() {
 			h.Use(cors.New(cors.Config{
 				AllowOrigins: []string{
 					"http://localhost:5173",
-					"https://your-vercel-app.vercel.app",
+					"https://agentic-streamer-ui-react.vercel.app",
 				},
 				AllowMethods:     []string{"GET", "POST", "DELETE", "OPTIONS"},
 				AllowHeaders:     []string{"Origin", "Content-Type"},
@@ -45,7 +45,7 @@ func main() {
 				MaxAge:           12 * time.Hour,
 			}))
 
-			// Health check path
+			// Health check endpoint
 			h.GET("/health", func(ctx context.Context, c *app.RequestContext) {
 				c.String(200, "OK")
 			})
