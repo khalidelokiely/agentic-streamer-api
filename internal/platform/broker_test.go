@@ -1,520 +1,326 @@
 package platform
 
 import (
+	"fmt"
 	"sync"
 	"testing"
 	"time"
 )
 
-// TestBrokerAddClient verifies that clients are correctly added to the broker
-func TestBrokerAddClient(t *testing.T) {
-	daemon := NewAgentDaemon(&mockEventStore{})
+// ============================================================================
+// 1. INTEGRATED THREAD-SAFE MOCK FOR ISOLATED TESTING
+// ============================================================================
+type mockTestDaemon struct {
+	mu           sync.Mutex
+	latestEvents map[string]*Event
+}
+
+func (m *mockTestDaemon) RegisterAgent(agent Agent) {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (m *mockTestDaemon) RegisterSnapshot(snapshot AgentRunSnapshot) {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (m *mockTestDaemon) Attach(o Observer)                        {}
+func (m *mockTestDaemon) Detach(o Observer)                        {}
+func (m *mockTestDaemon) Start()                                   {}
+func (m *mockTestDaemon) Query(p string, l int) []*Event           { return nil }
+func (m *mockTestDaemon) GetAgents() map[string]*AgentMetadata     { return nil }
+func (m *mockTestDaemon) GetAgentRuns(id string) []*AgentRunDetail { return nil }
+func (m *mockTestDaemon) GetAgentRunEvents(id string) []*Event     { return nil }
+func (m *mockTestDaemon) QueryLatest(param string) *Event {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.latestEvents == nil {
+		return nil
+	}
+	return m.latestEvents[param]
+}
+
+// ============================================================================
+// 2. COMPACTED CLIENT CONNECTION LIFECYCLE TESTS
+// ============================================================================
+
+// TestBroker_ClientLifecycleSequential validates basic connection registration and deregistration state tracking.
+func TestBroker_ClientLifecycleSequential(t *testing.T) {
+	daemon := &mockTestDaemon{}
 	broker := NewBroker(daemon)
-	
 	go broker.Start()
-	time.Sleep(50 * time.Millisecond) // Let broker start
-	
-	ch := make(chan Event, 100)
-	broker.AddClient("client-1", ch)
-	
-	time.Sleep(200 * time.Millisecond) // Let broker process
-	
+
+	ch := make(chan Event, 10)
+	clientID := "client-sequential-99"
+
+	// 1. Assert Addition
+	broker.AddClient(clientID, ch)
+	time.Sleep(5 * time.Millisecond) // short state-machine propagation sync
+
 	snapshot := broker.routingTable.Load().(*RoutingSnapshot)
-	if _, exists := snapshot.clients["client-1"]; !exists {
-		t.Error("Client not added to broker")
+	if _, exists := snapshot.clients[clientID]; !exists {
+		t.Fatal("Structural validation failed: Client was not registered inside state-machine maps")
+	}
+
+	// 2. Assert Removal
+	broker.RemoveClient(clientID, ch)
+	time.Sleep(5 * time.Millisecond)
+
+	snapshot = broker.routingTable.Load().(*RoutingSnapshot)
+	if _, exists := snapshot.clients[clientID]; exists {
+		t.Fatal("Structural validation failed: Client record leaked during graceful disconnect sequence")
 	}
 }
 
-// TestBrokerRemoveClient verifies client removal
-func TestBrokerRemoveClient(t *testing.T) {
-	daemon := NewAgentDaemon(&mockEventStore{})
+// TestBroker_ClientLifecycleConcurrent executes a high-density saturation test on connection queues under --race conditions.
+func TestBroker_ClientLifecycleConcurrent(t *testing.T) {
+	daemon := &mockTestDaemon{}
 	broker := NewBroker(daemon)
-	
 	go broker.Start()
-	time.Sleep(50 * time.Millisecond)
-	
-	ch := make(chan Event, 100)
-	broker.AddClient("client-1", ch)
-	time.Sleep(200 * time.Millisecond)
-	
-	broker.RemoveClient("client-1", ch)
-	time.Sleep(200 * time.Millisecond)
-	
-	snapshot := broker.routingTable.Load().(*RoutingSnapshot)
-	if _, exists := snapshot.clients["client-1"]; exists {
-		t.Error("Client not removed from broker")
-	}
-}
 
-// TestBrokerMultipleClientsRace tests concurrent client operations under --race
-func TestBrokerMultipleClientsRace(t *testing.T) {
-	daemon := NewAgentDaemon(&mockEventStore{})
-	broker := NewBroker(daemon)
-	
-	go broker.Start()
-	time.Sleep(50 * time.Millisecond)
-	
 	numClients := 50
 	var wg sync.WaitGroup
 	channels := make([]chan Event, numClients)
-	
-	// Add multiple clients concurrently
+
+	// Blast concurrent connection allocations
 	for i := 0; i < numClients; i++ {
 		wg.Add(1)
-		channels[i] = make(chan Event, 100)
+		channels[i] = make(chan Event, 10)
 		go func(idx int) {
 			defer wg.Done()
-			clientID := generateTestClientID(idx)
-			broker.AddClient(clientID, channels[idx])
+			broker.AddClient(fmt.Sprintf("concurrent-client-%d", idx), channels[idx])
 		}(i)
 	}
-	
 	wg.Wait()
-	time.Sleep(500 * time.Millisecond)
-	
-	// Verify all clients added
+	time.Sleep(10 * time.Millisecond)
+
 	snapshot := broker.routingTable.Load().(*RoutingSnapshot)
 	if len(snapshot.clients) != numClients {
-		t.Errorf("Expected %d clients, got %d", numClients, len(snapshot.clients))
+		t.Errorf("State map drift: Expected exactly %d clients, registered %d", numClients, len(snapshot.clients))
 	}
-	
-	// Remove all clients concurrently
+
+	// Blast concurrent disconnections
 	for i := 0; i < numClients; i++ {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			clientID := generateTestClientID(idx)
-			broker.RemoveClient(clientID, channels[idx])
+			broker.RemoveClient(fmt.Sprintf("concurrent-client-%d", idx), channels[idx])
 		}(i)
 	}
-	
 	wg.Wait()
-	time.Sleep(500 * time.Millisecond)
-	
+	time.Sleep(10 * time.Millisecond)
+
 	snapshot = broker.routingTable.Load().(*RoutingSnapshot)
 	if len(snapshot.clients) != 0 {
-		t.Errorf("Expected 0 clients, got %d", len(snapshot.clients))
+		t.Errorf("Cleanup map leakage: %d client paths remain attached following teardown blast", len(snapshot.clients))
 	}
 }
 
-// TestBrokerWatchRequest tests watch functionality
-func TestBrokerWatchRequest(t *testing.T) {
-	daemon := NewAgentDaemon(&mockEventStore{})
+// ============================================================================
+// 3. CORE LOGIC BOUNDARY & ROUTING TESTS
+// ============================================================================
+
+// TestBroker_WatchUnwatchExclusion Matrix asserts exact routing registration and the creation of wildcard exclusions.
+func TestBroker_WatchUnwatchExclusionMatrix(t *testing.T) {
+	daemon := &mockTestDaemon{}
 	broker := NewBroker(daemon)
-	
 	go broker.Start()
-	time.Sleep(50 * time.Millisecond)
-	
-	ch := make(chan Event, 100)
-	broker.AddClient("client-1", ch)
-	time.Sleep(200 * time.Millisecond)
-	
-	// Watch the specific agent run ID (not just agent ID)
-	watchReq := WatchRequest{
-		ClientID: "client-1",
-		Agents: []TargetAgent{
-			{ID: "codepal-v1:run_uuid_10000", LatestOnly: false},
-		},
-		Ctx: nil,
+
+	ch := make(chan Event, 10)
+	clientID := "client-beta"
+	broker.AddClient(clientID, ch)
+
+	// 1. Register Wildcard Subscription
+	broker.watchQueue <- WatchRequest{
+		ClientID: clientID,
+		Agents:   []TargetAgent{{ID: "orchestrator:*", LatestOnly: false}},
 	}
-	
-	broker.watchQueue <- watchReq
-	time.Sleep(200 * time.Millisecond)
-	
+	time.Sleep(5 * time.Millisecond)
+
 	snapshot := broker.routingTable.Load().(*RoutingSnapshot)
-	if len(snapshot.clients["client-1"].watchList) == 0 {
-		t.Error("Agent run not added to watch list")
+	if !snapshot.clients[clientID].watchList["orchestrator:*"] {
+		t.Fatal("Watch registration failed: Wildcard token mapping missing from client registry")
+	}
+
+	// 2. Issue an Unwatch Request on an active sub-run to trigger the exclusion layer
+	broker.Unwatch(UnwatchRequest{
+		clientID:    clientID,
+		agentIDList: []string{"orchestrator:run-xyz"},
+	})
+	time.Sleep(5 * time.Millisecond)
+
+	// 3. Assert system diagnostics maps export structural changes correctly
+	diag := broker.GetCurrentMaps()
+	clientsMap := diag["clients"].(map[string]interface{})
+	targetClient := clientsMap[clientID].(map[string]interface{})
+	exclusions := targetClient["exclusions"].(map[string]bool)
+
+	if !exclusions["orchestrator:run-xyz"] {
+		t.Error("Routing logic breakout: Unwatching an active sub-run within a wildcard namespace failed to generate an runtime exclusion entry")
 	}
 }
 
-// TestBrokerUnwatchRequest tests unwatch functionality
-func TestBrokerUnwatchRequest(t *testing.T) {
-	daemon := NewAgentDaemon(&mockEventStore{})
+// TestBroker_RoutingExecutionMatrix tests that targeted messages and wide wildcards route cleanly without cross-contamination.
+func TestBroker_RoutingExecutionMatrix(t *testing.T) {
+	daemon := &mockTestDaemon{}
 	broker := NewBroker(daemon)
-	
 	go broker.Start()
-	time.Sleep(50 * time.Millisecond)
-	
-	ch := make(chan Event, 100)
-	broker.AddClient("client-1", ch)
-	time.Sleep(200 * time.Millisecond)
-	
-	// Add watch
-	watchReq := WatchRequest{
-		ClientID: "client-1",
-		Agents: []TargetAgent{
-			{ID: "codepal-v1:run_uuid_10000", LatestOnly: false},
-		},
-		Ctx: nil,
+
+	chExplicit := make(chan Event, 10)
+	chWildcard := make(chan Event, 10)
+
+	broker.AddClient("explicit-client", chExplicit)
+	broker.AddClient("wildcard-client", chWildcard)
+	time.Sleep(5 * time.Millisecond)
+
+	// Client 1 watches a specific explicit run loop execution boundary
+	broker.watchQueue <- WatchRequest{
+		ClientID: "explicit-client",
+		Agents:   []TargetAgent{{ID: "coder-agent:run-100", LatestOnly: false}},
 	}
-	broker.watchQueue <- watchReq
-	time.Sleep(200 * time.Millisecond)
-	
-	// Remove watch
-	unwatchReq := UnwatchRequest{
-		agentIDList: []string{"codepal-v1:run_uuid_10000"},
-		clientID:    "client-1",
+	// Client 2 watches the general cluster namespace prefix
+	broker.watchQueue <- WatchRequest{
+		ClientID: "wildcard-client",
+		Agents:   []TargetAgent{{ID: "coder-agent:*", LatestOnly: false}},
 	}
-	broker.Unwatch(unwatchReq)
-	time.Sleep(200 * time.Millisecond)
-	
-	snapshot := broker.routingTable.Load().(*RoutingSnapshot)
-	if len(snapshot.clients["client-1"].watchList) != 0 {
-		t.Error("Agent run not removed from watch list")
+	time.Sleep(5 * time.Millisecond)
+
+	// Broadcast Event A: Matches both explicit run target AND wildcard pattern
+	eventMatching := Event{
+		AgentRunID: "coder-agent:run-100",
+		NodeName:   "llm_node",
+		NodeStatus: "THINKING",
+	}
+	broker.Process(eventMatching)
+
+	// Broadcast Event B: Matches wildcard namespace ONLY
+	eventWildcardOnly := Event{
+		AgentRunID: "coder-agent:run-200",
+		NodeName:   "tool_node",
+		NodeStatus: "EXECUTING_TOOL",
+	}
+	broker.Process(eventWildcardOnly)
+	time.Sleep(10 * time.Millisecond)
+
+	// Assert Explicit Client state engine outcomes
+	if len(chExplicit) != 1 {
+		t.Errorf("Routing mismatch: Explicit client channel received %d events instead of exactly 1", len(chExplicit))
+	}
+	evOut := <-chExplicit
+	if evOut.AgentRunID != "coder-agent:run-100" {
+		t.Errorf("Data contamination: Received wrong event context: %s", evOut.AgentRunID)
+	}
+
+	// Assert Wildcard Client state engine outcomes
+	if len(chWildcard) != 2 {
+		t.Errorf("Routing mismatch: Wildcard namespace subscriber dropped frames, expected 2 events, got %d", len(chWildcard))
 	}
 }
 
-// TestBrokerEventRoutingExactMatch tests that events are routed to clients watching exact agent run
-func TestBrokerEventRoutingExactMatch(t *testing.T) {
-	daemon := NewAgentDaemon(&mockEventStore{})
+// ============================================================================
+// 4. CAPACITY & RACE STRESS TESTING
+// ============================================================================
+
+// TestBroker_SlowClientBufferDrop verifies that slow clients with saturated channel pipes do not block the central processing pipeline.
+func TestBroker_SlowClientBufferDrop(t *testing.T) {
+	daemon := &mockTestDaemon{}
 	broker := NewBroker(daemon)
-	
 	go broker.Start()
-	time.Sleep(50 * time.Millisecond)
-	
-	// Register with daemon first
-	daemon.Attach(broker)
-	
-	ch1 := make(chan Event, 100)
-	ch2 := make(chan Event, 100)
-	
-	broker.AddClient("client-1", ch1)
-	broker.AddClient("client-2", ch2)
-	time.Sleep(200 * time.Millisecond)
-	
-	// Watch specific agent run for client-1
-	watchReq := WatchRequest{
-		ClientID: "client-1",
-		Agents: []TargetAgent{
-			{ID: "codepal-v1:run_uuid_10000", LatestOnly: false},
-		},
-		Ctx: nil,
+
+	// Give client a small capacity array of 2 entries
+	ch := make(chan Event, 2)
+	broker.AddClient("slow-client", ch)
+	time.Sleep(5 * time.Millisecond)
+
+	broker.watchQueue <- WatchRequest{
+		ClientID: "slow-client",
+		Agents:   []TargetAgent{{ID: "telemetry:*", LatestOnly: false}},
 	}
-	broker.watchQueue <- watchReq
-	time.Sleep(200 * time.Millisecond)
-	
-	// Send event via Process
-	event := Event{
-		AgentRunID: "codepal-v1:run_uuid_10000",
-		NodeName:   "llm_call",
-		NodeStatus: "EXECUTING",
-		Payload:    "test",
-		Timestamp:  time.Now().UnixMilli(),
+	time.Sleep(5 * time.Millisecond)
+
+	// Blast 10 sequential events. 2 should fill buffer, remainder must drop cleanly via default select blocks
+	for i := 0; i < 10; i++ {
+		broker.Process(Event{
+			AgentRunID: "telemetry:run-active",
+			NodeName:   "worker_pool",
+			NodeStatus: "STREAMING",
+		})
 	}
-	broker.Process(event)
-	time.Sleep(500 * time.Millisecond)
-	
-	// Check if event received by client-1
+
+	// Internal worker synchronization channel check loop
+	doneChan := make(chan struct{})
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		close(doneChan)
+	}()
+
 	select {
-	case received := <-ch1:
-		if received.AgentRunID != event.AgentRunID {
-			t.Errorf("Expected event %s, got %s", event.AgentRunID, received.AgentRunID)
+	case <-doneChan:
+		// Success: The broker loop successfully skipped the saturated channels without blocking the system thread
+		if len(ch) != 2 {
+			t.Errorf("Channel saturation tracking corrupted: expected buffer depth to be exactly 2, got %d", len(ch))
 		}
-	case <-time.After(1 * time.Second):
-		t.Error("Event not received by client-1")
-	}
-	
-	// Verify client-2 did not receive it
-	select {
-	case <-ch2:
-		t.Error("Event should not be received by client-2")
-	case <-time.After(100 * time.Millisecond):
-		// Expected
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("System Halt: The Broker main execution thread deadlocked on a slow client channel buffer write constraint")
 	}
 }
 
-// TestBrokerWildcardRouting tests wildcard agent subscription (agentID:*)
-func TestBrokerWildcardRouting(t *testing.T) {
-	daemon := NewAgentDaemon(&mockEventStore{})
+// TestBroker_HighContentionSnapshotRace launches parallel reader threads and state mutating loops to break atomic data swap points.
+func TestBroker_HighContentionSnapshotRace(t *testing.T) {
+	daemon := &mockTestDaemon{}
 	broker := NewBroker(daemon)
-	
 	go broker.Start()
-	time.Sleep(50 * time.Millisecond)
-	daemon.Attach(broker)
-	
-	ch := make(chan Event, 100)
-	broker.AddClient("client-1", ch)
-	time.Sleep(200 * time.Millisecond)
-	
-	// Watch wildcard - this should match any run of codepal-v1
-	watchReq := WatchRequest{
-		ClientID: "client-1",
-		Agents: []TargetAgent{
-			{ID: "codepal-v1:*", LatestOnly: false},
-		},
-		Ctx: nil,
-	}
-	broker.watchQueue <- watchReq
-	time.Sleep(200 * time.Millisecond)
-	
-	// Send event via Process
-	event := Event{
-		AgentRunID: "codepal-v1:run_uuid_10000",
-		NodeName:   "llm_call",
-		NodeStatus: "EXECUTING",
-		Payload:    "test",
-		Timestamp:  time.Now().UnixMilli(),
-	}
-	broker.Process(event)
-	time.Sleep(500 * time.Millisecond)
-	
-	// Should receive event via wildcard
-	select {
-	case received := <-ch:
-		if received.AgentRunID != event.AgentRunID {
-			t.Errorf("Wildcard route failed: expected %s, got %s", event.AgentRunID, received.AgentRunID)
-		}
-	case <-time.After(1 * time.Second):
-		t.Error("Event not received via wildcard subscription")
-	}
-}
 
-// TestBrokerConcurrentEventRouting tests concurrent event handling
-func TestBrokerConcurrentEventRouting(t *testing.T) {
-	daemon := NewAgentDaemon(&mockEventStore{})
-	broker := NewBroker(daemon)
-	
-	go broker.Start()
-	time.Sleep(50 * time.Millisecond)
-	daemon.Attach(broker)
-	
-	// Setup 10 clients
-	numClients := 10
-	channels := make([]chan Event, numClients)
-	
-	for i := 0; i < numClients; i++ {
-		channels[i] = make(chan Event, 100)
-		clientID := generateTestClientID(i)
-		broker.AddClient(clientID, channels[i])
-	}
-	time.Sleep(300 * time.Millisecond)
-	
-	// Have all clients watch same agent run using wildcard
-	for i := 0; i < numClients; i++ {
-		watchReq := WatchRequest{
-			ClientID: generateTestClientID(i),
-			Agents: []TargetAgent{
-				{ID: "codepal-v1:*", LatestOnly: false},
-			},
-			Ctx: nil,
-		}
-		broker.watchQueue <- watchReq
-	}
-	time.Sleep(300 * time.Millisecond)
-	
-	// Send 20 events via Process
-	numEvents := 20
-	
-	for i := 0; i < numEvents; i++ {
-		event := Event{
-			AgentRunID: "codepal-v1:run_uuid_10000",
-			NodeName:   "node",
-			NodeStatus: "EXECUTING",
-			Payload:    "",
-			Timestamp:  time.Now().UnixMilli(),
-		}
-		broker.Process(event)
-	}
-	
-	time.Sleep(500 * time.Millisecond)
-	
-	// Verify all clients received some events
-	for i := 0; i < numClients; i++ {
-		count := 0
-		for {
-			select {
-			case <-channels[i]:
-				count++
-			default:
-				goto done
-			}
-		}
-	done:
-		if count == 0 {
-			t.Errorf("Client %d received no events", i)
-		}
-	}
-}
-
-// TestBrokerGetCurrentMaps verifies snapshot export
-func TestBrokerGetCurrentMaps(t *testing.T) {
-	daemon := NewAgentDaemon(&mockEventStore{})
-	broker := NewBroker(daemon)
-	
-	go broker.Start()
-	time.Sleep(50 * time.Millisecond)
-	
-	ch := make(chan Event, 100)
-	broker.AddClient("client-1", ch)
-	time.Sleep(200 * time.Millisecond)
-	
-	watchReq := WatchRequest{
-		ClientID: "client-1",
-		Agents: []TargetAgent{
-			{ID: "codepal-v1:*", LatestOnly: false},
-		},
-		Ctx: nil,
-	}
-	broker.watchQueue <- watchReq
-	time.Sleep(200 * time.Millisecond)
-	
-	maps := broker.GetCurrentMaps()
-	if maps == nil {
-		t.Error("Expected maps, got nil")
-	}
-	
-	if _, exists := maps["clients"]; !exists {
-		t.Error("Missing clients in maps")
-	}
-	if _, exists := maps["agents"]; !exists {
-		t.Error("Missing agents in maps")
-	}
-}
-
-// TestBrokerChannelBufferHandling tests slow client handling
-func TestBrokerChannelBufferHandling(t *testing.T) {
-	daemon := NewAgentDaemon(&mockEventStore{})
-	broker := NewBroker(daemon)
-	
-	go broker.Start()
-	time.Sleep(50 * time.Millisecond)
-	daemon.Attach(broker)
-	
-	// Create small buffer channel
-	ch := make(chan Event, 5)
-	broker.AddClient("client-1", ch)
-	time.Sleep(200 * time.Millisecond)
-	
-	watchReq := WatchRequest{
-		ClientID: "client-1",
-		Agents: []TargetAgent{
-			{ID: "codepal-v1:*", LatestOnly: false},
-		},
-		Ctx: nil,
-	}
-	broker.watchQueue <- watchReq
-	time.Sleep(200 * time.Millisecond)
-	
-	// Send many events without consuming via Process
-	for i := 0; i < 20; i++ {
-		event := Event{
-			AgentRunID: "codepal-v1:run_uuid_10000",
-			NodeName:   "node",
-			NodeStatus: "EXECUTING",
-			Payload:    "",
-			Timestamp:  time.Now().UnixMilli(),
-		}
-		broker.Process(event)
-	}
-	
-	time.Sleep(500 * time.Millisecond)
-	
-	// Should not panic, some events should be received
-	count := 0
-	for {
-		select {
-		case <-ch:
-			count++
-		default:
-			goto done
-		}
-	}
-done:
-	// Buffer should have some events (up to buffer size)
-	if count == 0 {
-		t.Error("Buffer should have events")
-	}
-	if count > 5 {
-		t.Errorf("Buffer overflow: received %d events but capacity is 5", count)
-	}
-}
-
-// TestBrokerRaceConditionOnSnapshot tests for race conditions on atomic snapshot updates
-func TestBrokerRaceConditionOnSnapshot(t *testing.T) {
-	daemon := NewAgentDaemon(&mockEventStore{})
-	broker := NewBroker(daemon)
-	
-	go broker.Start()
-	time.Sleep(50 * time.Millisecond)
-	
 	var wg sync.WaitGroup
-	numIterations := 100
-	
-	// Multiple goroutines adding/removing clients and watching
+	stopSignal := make(chan struct{})
+
+	// Pool A: Constantly connects, subscribes, and tears down dynamic allocations
 	for i := 0; i < 5; i++ {
 		wg.Add(1)
-		go func(clientNum int) {
+		go func(workerID int) {
 			defer wg.Done()
-			for j := 0; j < numIterations; j++ {
-				ch := make(chan Event, 50)
-				clientID := "race-client-" + string(rune(clientNum*10+j))
-				
-				broker.AddClient(clientID, ch)
-				
-				watchReq := WatchRequest{
-					ClientID: clientID,
-					Agents: []TargetAgent{
-						{ID: "codepal-v1:*", LatestOnly: false},
-					},
-					Ctx: nil,
+			for idx := 0; ; idx++ {
+				select {
+				case <-stopSignal:
+					return
+				default:
+					ch := make(chan Event, 10)
+					cID := fmt.Sprintf("race-worker-%d-iteration-%d", workerID, idx)
+
+					broker.AddClient(cID, ch)
+					broker.watchQueue <- WatchRequest{
+						ClientID: cID,
+						Agents:   []TargetAgent{{ID: "agent-matrix:*", LatestOnly: false}},
+					}
+
+					// Let state register before removing
+					time.Sleep(1 * time.Millisecond)
+
+					broker.RemoveClient(cID, ch)
 				}
-				broker.watchQueue <- watchReq
-				
-				time.Sleep(10 * time.Millisecond)
-				
-				broker.RemoveClient(clientID, ch)
 			}
 		}(i)
 	}
-	
-	// Also continuously read the snapshot
-	readDone := make(chan struct{})
+
+	// Pool B: Independent parallel background thread loops parsing structural telemetry copies via Public API endpoints
+	wg.Add(1)
 	go func() {
-		for i := 0; i < numIterations*5; i++ {
-			_ = broker.GetCurrentMaps()
-			time.Sleep(5 * time.Millisecond)
+		defer wg.Done()
+		for {
+			select {
+			case <-stopSignal:
+				return
+			default:
+				// Pull diagnostic loads aggressively to collision check maps.Clone boundaries
+				_ = broker.GetCurrentMaps()
+				time.Sleep(1 * time.Millisecond)
+			}
 		}
-		close(readDone)
 	}()
-	
+
+	// Execution window
+	time.Sleep(150 * time.Millisecond)
+	close(stopSignal)
 	wg.Wait()
-	<-readDone
-	
-	// If we got here without panicking, race detector passed
-}
-
-// Helper function to generate unique client IDs
-func generateTestClientID(idx int) string {
-	return "test-client-" + string(rune(48+idx%10)) + string(rune(65+idx/10))
-}
-
-// Mock EventStore for testing
-type mockEventStore struct {
-	mu     sync.RWMutex
-	events map[string][]*Event
-}
-
-func (m *mockEventStore) Put(key string, value *Event) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.events == nil {
-		m.events = make(map[string][]*Event)
-	}
-	m.events[key] = append(m.events[key], value)
-}
-
-func (m *mockEventStore) Query(key string) []*Event {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.events[key]
-}
-
-func (m *mockEventStore) QueryLastN(key string, lastN int) []*Event {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	events := m.events[key]
-	if len(events) <= lastN {
-		return events
-	}
-	return events[len(events)-lastN:]
 }

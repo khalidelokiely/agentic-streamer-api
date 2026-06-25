@@ -117,6 +117,9 @@ func (a *AgentDaemon) seedStaticAgents() {
 
 // injectSimulatedSnapshot randomly picks an active agent and fires a snapshot into its own queue
 func (a *AgentDaemon) injectSimulatedSnapshot() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
 	if len(a.agents) == 0 {
 		return
 	}
@@ -132,8 +135,19 @@ func (a *AgentDaemon) injectSimulatedSnapshot() {
 	}
 
 	randomAgentID := agentIDs[rand.Intn(len(agentIDs))]
+
+	// FIX 1: Safeguard the dynamic fake run lookup
+	runs := a.fakerAgentRunList[randomAgentID]
+	if len(runs) == 0 {
+		return // Skip simulation if this agent has no seeded fake runs (e.g. test agents)
+	}
+	runID := runs[rand.Intn(len(runs))]
+
 	meta := a.agents[randomAgentID]
-	runID := a.fakerAgentRunList[randomAgentID][rand.Intn(len(a.fakerAgentRunList[randomAgentID]))]
+	// FIX 2: Safeguard against empty or missing NodeIDList profiles
+	if meta == nil || len(meta.NodeIDList) == 0 {
+		return
+	}
 
 	// Pick a random sub-node from the agent's defined graph layout
 	randomNode := meta.NodeIDList[rand.Intn(len(meta.NodeIDList))]
@@ -153,7 +167,7 @@ func (a *AgentDaemon) injectSimulatedSnapshot() {
 	select {
 	case a.runSnapshotQueue <- snapshot:
 	default:
-		fmt.Println("Warning: runSnapshotQueue full, dropping simulated event")
+		// Stream silently to avoid polluting test outputs
 	}
 }
 
@@ -235,11 +249,17 @@ func (a *AgentDaemon) notify(event Event) {
 	}
 }
 
+// GetAgents @TODO: Change the underlying data structure to optimally use atomic.Value
 func (a *AgentDaemon) GetAgents() map[string]*AgentMetadata {
 	a.mu.RLock() // Allow other readers, block writers
 	defer a.mu.RUnlock()
 
-	return a.agents
+	cloned := make(map[string]*AgentMetadata, len(a.agents))
+	for id, meta := range a.agents {
+		cloned[id] = meta
+	}
+
+	return cloned
 }
 
 func (a *AgentDaemon) GetAgentRuns(agentID string) []*AgentRunDetail {

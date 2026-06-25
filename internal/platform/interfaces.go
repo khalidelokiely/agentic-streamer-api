@@ -17,6 +17,8 @@ type DaemonController interface {
 	GetAgents() map[string]*AgentMetadata
 	GetAgentRuns(agentId string) []*AgentRunDetail
 	GetAgentRunEvents(agentRunId string) []*Event
+	RegisterAgent(agent Agent)
+	RegisterSnapshot(snapshot AgentRunSnapshot)
 }
 
 type Observer interface {
