@@ -136,6 +136,12 @@ agentic-streamer-api/
 - Go 1.23+
 - Git
 
+### Testing
+```bash
+#Race tests
+go test ./... --race 
+```
+
 ### Installation
 
 ```bash
@@ -290,6 +296,8 @@ For bugs, feature requests, or questions, please open an issue on [GitHub](https
 ## 🎯 Future Enhancements
 
 - [ ] **Push-based Event Ingestion Endpoint** - Create a dedicated endpoint for external services (LangChain, AutoGen, etc.) to push agent run events into the streamer instead of relying on seeded demo data
+- [ ] Improve some lock mechanisms in the AgentDaemon
+- [ ] Add Caching for AgentMetadata so handler can use it instead of hitting the AgentDaemon - reducing lock contention
 - [ ] Persistent storage backend (PostgreSQL/MongoDB)
 - [ ] Authentication & authorization layer
 - [ ] Event filtering and query capabilities
