@@ -80,7 +80,7 @@ curl -X POST "https://agentic-streamer-api-production.up.railway.app/v1/agents/w
     "client_id": "client-123",
     "agents": [
       {
-        "id": "codepal-v1",
+        "id": "codepal-v1:run_uuid_10000",
         "latest_only": false
       }
     ]
@@ -178,7 +178,7 @@ curl -X POST "http://localhost:8080/v1/agents/watch" \
     "client_id": "local-client",
     "agents": [
       {
-        "id": "codepal-v1",
+        "id": "codepal-v1:run_uuid_10000",
         "latest_only": false
       }
     ]
@@ -233,7 +233,7 @@ Subscribe to agent updates with:
   "client_id": "client-123",
   "agents": [
     {
-      "id": "codepal-v1",
+      "id": "codepal-v1:run_uuid_10000",
       "latest_only": false
     }
   ]
@@ -298,6 +298,7 @@ For bugs, feature requests, or questions, please open an issue on [GitHub](https
 - [ ] **Push-based Event Ingestion Endpoint** - Create a dedicated endpoint for external services (LangChain, AutoGen, etc.) to push agent run events into the streamer instead of relying on seeded demo data
 - [ ] Improve some lock mechanisms in the AgentDaemon
 - [ ] Add Caching for AgentMetadata so handler can use it instead of hitting the AgentDaemon - reducing lock contention
+- [ ] Graceful shutdown and persistence of events upon run completion
 - [ ] Persistent storage backend (PostgreSQL/MongoDB)
 - [ ] Authentication & authorization layer
 - [ ] Event filtering and query capabilities
