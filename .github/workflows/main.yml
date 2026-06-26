@@ -1,0 +1,30 @@
+name: Concurrency & Race Check
+
+on:
+  push:
+    branches: [ main, master, dev ]
+  pull_request:
+    branches: [ main, master, dev ]
+
+jobs:
+  test:
+    name: Run Race Detector
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          # Automatically detects and uses the Go version specified in your go.mod
+          go-version-file: 'go.mod'
+          # Built-in caching for go module dependencies and build outputs
+          cache: true
+
+      - name: Install Dependencies
+        run: go mod download
+
+      - name: Execute Tests with Race Detector
+        run: go test -race -v ./...
