@@ -164,14 +164,14 @@ func TestBrokerRace_HighContentionChurn(t *testing.T) {
 					// Send watch request
 					broker.watchQueue <- WatchRequest{
 						ClientID: clientID,
-						Agents:   []TargetAgent{{ID: targetAgent, LatestOnly: true}},
+						Agents:   []TargetAgent{{ID: AgentRunID(targetAgent), LatestOnly: true}},
 					}
 					time.Sleep(1 * time.Millisecond)
 
 					// Send unwatch request
 					broker.Unwatch(UnwatchRequest{
-						agentIDList: []string{targetAgent},
-						clientID:    clientID,
+						AgentRunIDs: []AgentRunID{AgentRunID(targetAgent)},
+						ClientID:    clientID,
 					})
 					time.Sleep(1 * time.Millisecond)
 				}
@@ -190,7 +190,7 @@ func TestBrokerRace_HighContentionChurn(t *testing.T) {
 					return
 				default:
 					ev := Event{
-						AgentRunID: fmt.Sprintf("agent-%d:run-xyz", rand.Intn(10)),
+						AgentRunID: AgentRunID(fmt.Sprintf("agent-%d:run-xyz", rand.Intn(10))),
 						NodeName:   "llm_call",
 						NodeStatus: "THINKING",
 						Timestamp:  time.Now().UnixMilli(),
@@ -309,7 +309,7 @@ func TestDaemonRace_StateMutationAndObservation(t *testing.T) {
 					// Hit data reader boundaries protected by RLock
 					_ = daemon.GetAgents()
 					_ = daemon.GetAgentRuns(targetAgent)
-					_ = daemon.GetAgentRunEvents(fmt.Sprintf("%s:%s", targetAgent, targetRun))
+					_ = daemon.GetAgentRunEvents(AgentRunID(fmt.Sprintf("%s:%s", targetAgent, targetRun)))
 					_ = daemon.QueryLatest(fmt.Sprintf("%s:%s", targetAgent, targetRun))
 
 					time.Sleep(1 * time.Millisecond)

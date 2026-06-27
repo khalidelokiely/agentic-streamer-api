@@ -31,7 +31,7 @@ func (m *mockTestDaemon) Start()                                   {}
 func (m *mockTestDaemon) Query(p string, l int) []*Event           { return nil }
 func (m *mockTestDaemon) GetAgents() map[string]*AgentMetadata     { return nil }
 func (m *mockTestDaemon) GetAgentRuns(id string) []*AgentRunDetail { return nil }
-func (m *mockTestDaemon) GetAgentRunEvents(id string) []*Event     { return nil }
+func (m *mockTestDaemon) GetAgentRunEvents(id AgentRunID) []*Event { return nil }
 func (m *mockTestDaemon) QueryLatest(param string) *Event {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -145,8 +145,8 @@ func TestBroker_WatchUnwatchExclusionMatrix(t *testing.T) {
 
 	// 2. Issue an Unwatch Request on an active sub-run to trigger the exclusion layer
 	broker.Unwatch(UnwatchRequest{
-		clientID:    clientID,
-		agentIDList: []string{"orchestrator:run-xyz"},
+		ClientID:    clientID,
+		AgentRunIDs: []AgentRunID{"orchestrator:run-xyz"},
 	})
 	time.Sleep(5 * time.Millisecond)
 
@@ -154,7 +154,7 @@ func TestBroker_WatchUnwatchExclusionMatrix(t *testing.T) {
 	diag := broker.GetCurrentMaps()
 	clientsMap := diag["clients"].(map[string]interface{})
 	targetClient := clientsMap[clientID].(map[string]interface{})
-	exclusions := targetClient["exclusions"].(map[string]bool)
+	exclusions := targetClient["exclusions"].(map[AgentRunID]bool)
 
 	if !exclusions["orchestrator:run-xyz"] {
 		t.Error("Routing logic breakout: Unwatching an active sub-run within a wildcard namespace failed to generate an runtime exclusion entry")
