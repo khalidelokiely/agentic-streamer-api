@@ -1,70 +1,82 @@
+// Copyright 2026 The Agentic Streamer Authors.
+// SPDX-License-Identifier: Apache-2.0
+
 package platform
 
 import (
 	"context"
-	"fmt"
 	"log"
-	"math/rand"
-	"time"
 
 	"github.com/cloudwego/hertz/pkg/app"
+	"github.com/cloudwego/hertz/pkg/protocol/consts"
 	"github.com/cloudwego/hertz/pkg/protocol/sse"
 	"github.com/oklog/ulid/v2"
 )
 
+// Handler bridges incoming HTTP requests from the Hertz web surface to core daemons.
 type Handler struct {
 	agentDaemon DaemonController
 	broker      *Broker
 }
 
+// NewHandler constructs a unified HTTP handler controller.
 func NewHandler(agentDaemon DaemonController, broker *Broker) *Handler {
-	go broker.Start()
-	go agentDaemon.Start()
-
 	return &Handler{
 		agentDaemon: agentDaemon,
 		broker:      broker,
 	}
 }
 
+// GetAvailableAgents handles GET /v1/agents
 func (h *Handler) GetAvailableAgents(ctx context.Context, c *app.RequestContext) {
-	c.JSON(200, h.agentDaemon.GetAgents())
-	return
+	c.JSON(consts.StatusOK, h.agentDaemon.GetAgents())
 }
 
+// GetAvailableAgentRuns handles GET /v1/agents/:agentId/runs
 func (h *Handler) GetAvailableAgentRuns(ctx context.Context, c *app.RequestContext) {
-	agentId := c.Param("agentId")
-	c.JSON(200, h.agentDaemon.GetAgentRuns(agentId))
-	return
+	agentID := c.Param("agentId")
+	if agentID == "" {
+		c.JSON(consts.StatusBadRequest, map[string]string{"error": "missing path parameter: agentId"})
+		return
+	}
+	c.JSON(consts.StatusOK, h.agentDaemon.GetAgentRuns(agentID))
 }
 
-func (h *Handler) GetAvailableAgentRunEvents(xtx context.Context, c *app.RequestContext) {
-	agentRunId := c.Param("agentId") + ":" + c.Param("runId")
-	c.JSON(200, h.agentDaemon.GetAgentRunEvents(agentRunId))
-	return
+// GetAvailableAgentRunEvents handles GET /v1/agents/:agentId/runs/:runId/events
+func (h *Handler) GetAvailableAgentRunEvents(ctx context.Context, c *app.RequestContext) {
+	agentID := c.Param("agentId")
+	runID := c.Param("runId")
+	if agentID == "" || runID == "" {
+		c.JSON(consts.StatusBadRequest, map[string]string{"error": "malformed path coordinates"})
+		return
+	}
+
+	compositeID := AgentRunID(agentID + ":" + runID)
+	c.JSON(consts.StatusOK, h.agentDaemon.GetAgentRunEvents(compositeID))
 }
 
+// SSE provisions persistent stream hooks for Server-Sent Events configurations.
 func (h *Handler) SSE(ctx context.Context, c *app.RequestContext) {
-	clientId := c.Query("clientId")
-	if clientId == "" {
-		c.JSON(400, map[string]string{"error": "missing client id"})
+	clientID := c.Query("clientId")
+	if clientID == "" {
+		c.JSON(consts.StatusBadRequest, map[string]string{"error": "missing client id query parameter"})
 		return
 	}
 
 	w := sse.NewWriter(c)
 
-	// 2. Clearer defer layout: Close the writer when the stream terminates
+	// Clearer defer layout: Close the writer when the stream terminates
 	defer func() {
 		_ = w.Close()
 	}()
 
-	// Use a buffered channel to prevent slow clients from blocking the broker lock
+	// Buffered channel to prevent slow consumers from backing up coordinator loops
 	clientChannel := make(chan Event, 100)
 
-	h.broker.AddClient(clientId, clientChannel)
+	h.broker.AddClient(clientID, clientChannel)
 
-	// 3. CRITICAL FIX: Clean up the broker registry automatically when the handler exits!
-	defer h.broker.RemoveClient(clientId, clientChannel)
+	// Clean up the broker registry automatically when the handler exits
+	defer h.broker.RemoveClient(clientID, clientChannel)
 
 	// Send initial handshake to establish connection visibility
 	if err := w.WriteEvent("0", "HELLO", []byte("Hello Visitor")); err != nil {
@@ -74,73 +86,67 @@ func (h *Handler) SSE(ctx context.Context, c *app.RequestContext) {
 	for {
 		select {
 		case <-ctx.Done():
-			log.Printf("Context cancelled, tearing down connection for client: %s\n", clientId)
+			log.Printf("Context cancelled, tearing down connection for client: %s\n", clientID)
 			return
 
 		case event, ok := <-clientChannel:
 			if !ok {
-				// Safe channel drain check in case the broker closes the channel explicitly
 				return
 			}
 
-			// Execute write operation
-			err := w.WriteEvent(generateULID(), "SSE_EVENT_AGENT_RUN_WATCH", event.Bytes())
+			// Allocation-Free Performance Fix: Replaced custom generator with native ulid.Make()
+			eventID := ulid.Make().String()
+			err := w.WriteEvent(eventID, "SSE_EVENT_AGENT_RUN_WATCH", event.Bytes())
 			if err != nil {
-				fmt.Println(clientChannel)
-				// 4. CRITICAL FIX: Changed 'continue' to 'return'.
-				// If a write fails, the connection is dead. We must clean up and terminate.
-				fmt.Printf("Client connection lost. Terminating stream: %v, Client: %s\n", err, clientId)
+				log.Printf("Client connection lost. Terminating stream: %v, Client: %s\n", err, clientID)
 				return
 			}
 		}
 	}
 }
 
+// WatchAgentsRequest handles POST /v1/agents/watch
 func (h *Handler) WatchAgentsRequest(ctx context.Context, c *app.RequestContext) {
 	var watchRequest WatchRequest
 
-	err := c.BindJSON(&watchRequest)
-	if err != nil {
-		c.JSON(400, map[string]string{"error": err.Error()})
+	if err := c.BindJSON(&watchRequest); err != nil {
+		c.JSON(consts.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
 
 	watchRequest.Ctx = ctx
-
 	h.broker.watchQueue <- watchRequest
 
-	c.JSON(201, map[string]interface{}{"message": "Agent(s) added to watch list", "payload": watchRequest})
+	c.JSON(consts.StatusCreated, map[string]interface{}{
+		"message": "Agent(s) added to watch list",
+		"payload": watchRequest,
+	})
 }
 
-func (h *Handler) GetCurrentWatchersAndClients(ctx context.Context, c *app.RequestContext) {
-	c.JSON(200, h.broker.GetCurrentMaps())
-}
-
+// UnwatchAgentRequest handles POST /v1/agents/unwatch (Polished Batch Payload Pipeline)
 func (h *Handler) UnwatchAgentRequest(ctx context.Context, c *app.RequestContext) {
-	agentId := c.Param("agentId")
-	clientId := c.Query("clientId")
+	var unwatchRequest UnwatchRequest
 
-	if agentId == "" || clientId == "" {
-		c.JSON(400, map[string]string{"error": "missing agent id or client id"})
+	// Bind request JSON containing ClientID and AgentRunIDs array directly
+	if err := c.BindJSON(&unwatchRequest); err != nil {
+		c.JSON(consts.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
 
-	req := UnwatchRequest{
-		agentIDList: []string{agentId},
-		clientID:    clientId,
+	if unwatchRequest.ClientID == "" || len(unwatchRequest.AgentRunIDs) == 0 {
+		c.JSON(consts.StatusBadRequest, map[string]string{"error": "invalid client_id or missing target run ids array"})
+		return
 	}
 
-	h.broker.Unwatch(req)
+	h.broker.Unwatch(unwatchRequest)
+
+	c.JSON(consts.StatusOK, map[string]interface{}{
+		"message": "Unwatch request processed",
+		"payload": unwatchRequest,
+	})
 }
 
-func generateULID() string {
-	entropy := rand.New(rand.NewSource(time.Now().UnixNano()))
-	ms := ulid.Timestamp(time.Now())
-	ulid, err := ulid.New(ms, entropy)
-
-	if err != nil {
-		panic(err)
-	}
-
-	return ulid.String()
+// GetCurrentWatchersAndClients handles GET /v1/agents/watchers
+func (h *Handler) GetCurrentWatchersAndClients(ctx context.Context, c *app.RequestContext) {
+	c.JSON(consts.StatusOK, h.broker.GetCurrentMaps())
 }
