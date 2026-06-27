@@ -5,6 +5,8 @@
 A high-performance REST API backend for live agentic updates powered by Go and server-sent events (SSE). Built with [Hertz](https://www.cloudwego.io/) and [Uber FX](https://github.com/uber-go/fx), this service enables real-time streaming of agent execution events to multiple clients simultaneously.
 
 ## 🚀 Live Demo
+![Deployed on Railway](https://img.shields.io/badge/Deployed%20on-Railway-0B0D0E?style=for-the-badge&logo=railway)
+
 
 **Production URL:** https://agentic-streamer-api-production.up.railway.app/
 
