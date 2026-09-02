@@ -36,6 +36,8 @@ type DaemonController interface {
 	GetAgentRunEvents(agentRunID AgentRunID) []*Event
 	// RegisterAgent injects static capability schemas into the engine context.
 	RegisterAgent(agent Agent)
+	// RegisterAgentRun registers active agent run for discoverability
+	RegisterAgentRun(agentRun AgentRunDetail)
 	// RegisterSnapshot pumps live incoming status frames directly into processing streams.
 	RegisterSnapshot(snapshot AgentRunSnapshot)
 }

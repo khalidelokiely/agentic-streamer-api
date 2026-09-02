@@ -15,6 +15,8 @@ type mockTestDaemon struct {
 	latestEvents map[string]*Event
 }
 
+func (m *mockTestDaemon) RegisterAgentRun(agentRun AgentRunDetail) { panic("implement me") }
+
 func (m *mockTestDaemon) RegisterAgent(agent Agent) {
 	//TODO implement me
 	panic("implement me")

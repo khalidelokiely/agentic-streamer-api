@@ -15,6 +15,9 @@ func RegisterRoutes(s *server.Hertz, h *Handler) {
 		rg.GET("", h.GetAvailableAgents)
 		rg.GET("/:agentId/runs", h.GetAvailableAgentRuns)
 		rg.GET("/:agentId/runs/:runId/events", h.GetAvailableAgentRunEvents)
+		rg.POST("", h.RegisterAgent)
+		rg.POST("/:id/runs", h.RegisterAgentRun)
+		rg.POST("/:id/runs/:runId/events", h.RegisterAgentRunEvent)
 
 		// --- STREAMING & SUBSCRIPTIONS --- //
 		rg.GET("/sse", h.SSE)

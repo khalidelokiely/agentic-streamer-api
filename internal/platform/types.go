@@ -87,6 +87,13 @@ type Agent struct {
 	Metadata AgentMetadata `json:"metadata"`
 }
 
+func (a *Agent) Validate() bool {
+	if a.ID == "" {
+		return false
+	}
+	return true
+}
+
 // AgentMetadata encapsulates behavioral topologies defining step counts and properties.
 type AgentMetadata struct {
 	Type        string   `json:"type"`
@@ -97,20 +104,32 @@ type AgentMetadata struct {
 
 // AgentRunDetail details historical instance identification schemas for cold UI hydration tasks.
 type AgentRunDetail struct {
-	AgentRunID      string `json:"agent_run_id"`
+	AgentRunID      string `json:"agent_run_id"` // Format: "agent_id:run_id"
 	TaskName        string `json:"task_name"`
 	TaskDescription string `json:"task_description"`
-	TaskID          string `json:"task_id,omitempty"`
+	Status          string `json:"status"` // PENDING, RUNNING, COMPLETE, FAILED
 	CreatedBy       string `json:"created_by"`
 	CreatedAt       int64  `json:"created_at"`
 }
 
 // AgentRunSnapshot specifies the flat payload boundary mapping structures parsed directly from input fabrics.
 type AgentRunSnapshot struct {
-	AgentID    string `json:"agent_id"`
-	RunID      string `json:"run_id"`
-	NodeID     string `json:"node_id"`
-	NodeStatus string `json:"node_status"`
+	AgentID    string         `json:"agent_id"`
+	RunID      string         `json:"run_id"`
+	NodeID     string         `json:"node_id"`
+	NodeStatus string         `json:"node_status"` // PENDING, THINKING, CALLING_TOOL, AWAITING_INPUT, RETRYING, COMPLETE, FAILED
+	Message    string         `json:"message,omitempty"`
+	Payload    map[string]any `json:"payload,omitempty"`
+	Metadata   TraceMetadata  `json:"metadata,omitempty"`
+}
+
+// TraceMetadata trace metadata for the snapshot event
+type TraceMetadata struct {
+	PromptTokens     int    `json:"prompt_tokens,omitempty"`
+	CompletionTokens int    `json:"completion_tokens,omitempty"`
+	ExecutionTimeMs  int64  `json:"execution_time_ms,omitempty"`
+	LLMProvider      string `json:"llm_provider,omitempty"`
+	LLMModel         string `json:"llm_model,omitempty"`
 }
 
 // WatchRequest packages explicit arrays targeting execution tracking triggers.

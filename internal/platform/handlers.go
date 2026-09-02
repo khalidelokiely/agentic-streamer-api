@@ -150,3 +150,52 @@ func (h *Handler) UnwatchAgentRequest(ctx context.Context, c *app.RequestContext
 func (h *Handler) GetCurrentWatchersAndClients(ctx context.Context, c *app.RequestContext) {
 	c.JSON(consts.StatusOK, h.broker.GetCurrentMaps())
 }
+
+// RegisterAgent handles POST /v1/agents
+func (h *Handler) RegisterAgent(ctx context.Context, c *app.RequestContext) {
+	var agent Agent
+	if err := c.BindJSON(&agent); err != nil {
+		c.JSON(consts.StatusBadRequest, map[string]string{"error": err.Error()})
+	}
+
+	if !agent.Validate() {
+		c.JSON(consts.StatusBadRequest, map[string]string{"error": "invalid agent object"})
+		return
+	}
+
+	h.agentDaemon.RegisterAgent(agent)
+
+	c.JSON(consts.StatusOK, map[string]interface{}{
+		"message": "Register agent request processed", "payload": agent,
+	})
+}
+
+// RegisterAgentRun handles POST /v1/agents/:id/runs
+func (h *Handler) RegisterAgentRun(ctx context.Context, c *app.RequestContext) {
+	var runDetail AgentRunDetail
+	if err := c.BindJSON(&runDetail); err != nil {
+		c.JSON(consts.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	h.agentDaemon.RegisterAgentRun(runDetail)
+
+	c.JSON(consts.StatusOK, map[string]interface{}{
+		"message": "Register agent run processed", "payload": runDetail,
+	})
+}
+
+// RegisterAgentRunEvent handles POST /v1/agents/:id/runs/:runId/events
+func (h *Handler) RegisterAgentRunEvent(ctx context.Context, c *app.RequestContext) {
+	var snapshot AgentRunSnapshot
+	if err := c.BindJSON(&snapshot); err != nil {
+		c.JSON(consts.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	h.agentDaemon.RegisterSnapshot(snapshot)
+
+	c.JSON(consts.StatusOK, map[string]interface{}{
+		"message": "ok", "payload": snapshot,
+	})
+}

@@ -7,32 +7,32 @@ import (
 	"fmt"
 	"maps"
 	"math/rand"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 )
 
-// DaemonSnapshot protects state registers using an immutable copy-on-write structural layout.
 type DaemonSnapshot struct {
 	agents            map[string]*AgentMetadata
 	runningAgents     map[string]map[string]*AgentRunDetail
 	fakerAgentRunList map[string][]string
 }
 
-// AgentDaemon implements the central coordination kernel monitoring multi-agent graph topologies.
+// ============================================================================
+// THE COORDINATION COORDINATOR KERNEL
+// ============================================================================
+
 type AgentDaemon struct {
-	// memTable handles high-speed chronological event indexing.
 	memTable EventStore
-	// snapshot holds the atomic pointer to the active immutable DaemonSnapshot.
 	snapshot atomic.Value
+	sequence int64 // Controlled exclusively inside the single thread worker loop
 
-	// registerRequestQueue buffers incoming external static registration demands.
-	registerRequestQueue chan Agent
-	// runSnapshotQueue buffers runtime operational telemetry frames.
-	runSnapshotQueue chan AgentRunSnapshot
+	registerRequestQueue  chan Agent
+	registerAgentRunQueue chan AgentRunDetail
+	runSnapshotQueue      chan AgentRunSnapshot
 
-	// observersMu guards the lifecycle attachment matrix exclusively.
 	observersMu sync.RWMutex
 	observers   map[Observer]bool
 }
@@ -40,13 +40,13 @@ type AgentDaemon struct {
 // NewAgentDaemon initializes and returns an un-started instance of the core state manager daemon.
 func NewAgentDaemon(eventStore EventStore) DaemonController {
 	d := &AgentDaemon{
-		memTable:             eventStore,
-		observers:            make(map[Observer]bool),
-		registerRequestQueue: make(chan Agent, 100),
-		runSnapshotQueue:     make(chan AgentRunSnapshot, 100),
+		memTable:              eventStore,
+		observers:             make(map[Observer]bool),
+		registerRequestQueue:  make(chan Agent, 100),
+		registerAgentRunQueue: make(chan AgentRunDetail, 100),
+		runSnapshotQueue:      make(chan AgentRunSnapshot, 100),
 	}
 
-	// Bootstrap core atomic registry structures with empty maps.
 	d.snapshot.Store(&DaemonSnapshot{
 		agents:            make(map[string]*AgentMetadata),
 		runningAgents:     make(map[string]map[string]*AgentRunDetail),
@@ -57,29 +57,27 @@ func NewAgentDaemon(eventStore EventStore) DaemonController {
 }
 
 // Start ignites the event coordinator runtime engine loop.
-// This executes indefinitely and must be provisioned inside an isolated runtime thread wrapper.
 func (a *AgentDaemon) Start() {
 	fmt.Println("Starting AgentDaemon state coordinator...")
 
-	// 1. Seed static configurations directly onto the initial state snapshot.
+	// 1. Streamlined Configuration Seeding via unified processing pipelines
 	a.seedStaticAgents()
 
-	// 2. Initialize simulation heartbeat metrics.
 	simulationTicker := time.NewTicker(2 * time.Second)
 	defer simulationTicker.Stop()
 
-	var sequence int64
-
-	// 3. The Lock-Free Processing Engine.
-	// This loop thread owns mutations; no locks are required to read or alter internal copies.
+	// 2. The Lock-Free Single-Writer Processing Engine
 	for {
 		select {
 		case req := <-a.registerRequestQueue:
 			a.processAgentRegisterRequest(req)
 
+		case runReq := <-a.registerAgentRunQueue:
+			a.processAgentRun(runReq)
+
 		case snapshot := <-a.runSnapshotQueue:
-			sequence++
-			a.processAgentRunSnapshot(snapshot, sequence)
+			a.sequence++
+			a.processAgentRunSnapshot(snapshot, a.sequence)
 
 		case <-simulationTicker.C:
 			a.injectSimulatedSnapshot()
@@ -87,27 +85,113 @@ func (a *AgentDaemon) Start() {
 	}
 }
 
-// processAgentRegisterRequest inserts structural execution templates safely into registries.
+// ============================================================================
+// MUTATION ENGINES (Strict Copy-On-Write & Guard Gated)
+// ============================================================================
+
 func (a *AgentDaemon) processAgentRegisterRequest(req Agent) {
 	current := a.snapshot.Load().(*DaemonSnapshot)
 
-	// Clone top-level configuration elements to support clean mutation separation.
-	nextAgents := maps.Clone(current.agents)
-	nextRunning := maps.Clone(current.runningAgents)
-	nextFaker := maps.Clone(current.fakerAgentRunList)
+	// Guard Gate: Exit if metadata configuration has not evolved
+	if existing, exists := current.agents[req.ID]; exists {
+		if reflect.DeepEqual(existing, &req.Metadata) {
+			return
+		}
+	}
 
+	nextAgents := maps.Clone(current.agents)
 	nextAgents[req.ID] = &req.Metadata
 
 	a.snapshot.Store(&DaemonSnapshot{
 		agents:            nextAgents,
+		runningAgents:     current.runningAgents,
+		fakerAgentRunList: current.fakerAgentRunList,
+	})
+}
+
+func (a *AgentDaemon) processAgentRun(req AgentRunDetail) {
+	parts := strings.Split(req.AgentRunID, ":")
+	if len(parts) != 2 {
+		return
+	}
+	agentID, runID := parts[0], parts[1]
+
+	current := a.snapshot.Load().(*DaemonSnapshot)
+
+	// Guard Gate: Prevent redundant re-allocations if the run is already active
+	if nested, exists := current.runningAgents[agentID]; exists {
+		if _, runExists := nested[runID]; runExists {
+			return
+		}
+	}
+
+	// 1. Evolve the Running Agents Map Tree
+	nextRunning := maps.Clone(current.runningAgents)
+	if nextRunning[agentID] == nil {
+		nextRunning[agentID] = make(map[string]*AgentRunDetail)
+	} else {
+		nextRunning[agentID] = maps.Clone(nextRunning[agentID])
+	}
+	nextRunning[agentID][runID] = &req
+
+	// 2. Evolve the Simulator Manifest list concurrently to keep them perfectly in sync
+	nextFaker := maps.Clone(current.fakerAgentRunList)
+	nextFaker[agentID] = append(append([]string(nil), nextFaker[agentID]...), runID)
+
+	a.snapshot.Store(&DaemonSnapshot{
+		agents:            current.agents,
 		runningAgents:     nextRunning,
 		fakerAgentRunList: nextFaker,
 	})
 }
 
-// processAgentRunSnapshot parses real-time execution states and commits updates downstream.
 func (a *AgentDaemon) processAgentRunSnapshot(req AgentRunSnapshot, sequence int64) {
-	// Compute unified, zero-padded sortable string indexing bounds for the skip list storage tier.
+	current := a.snapshot.Load().(*DaemonSnapshot)
+
+	// FEATURE 1: TOPOLOGY VALIDATION FIREWALL
+	agentMeta, agentExists := current.agents[req.AgentID]
+	if !agentExists {
+		fmt.Printf("[WARNING] Ingestion dropped: Agent '%s' is unregistered.\n", req.AgentID)
+		return
+	}
+
+	isValidNode := false
+	for _, nodeID := range agentMeta.NodeIDList {
+		if nodeID == req.NodeID {
+			isValidNode = true
+			break
+		}
+	}
+	if !isValidNode {
+		fmt.Printf("[REJECTED] Ingestion dropped: Node '%s' violates layout bounds for '%s'.\n", req.NodeID, req.AgentID)
+		return
+	}
+
+	// FEATURE 2: AUTOMATED RUN STATE MACRO LIFECYCLE MUTATOR
+	if nested, exists := current.runningAgents[req.AgentID]; exists {
+		if currentRun, runExists := nested[req.RunID]; runExists {
+
+			isTerminalState := req.NodeStatus == "COMPLETE" || req.NodeStatus == "FAILED"
+
+			if currentRun.Status != req.NodeStatus && isTerminalState {
+				nextRunning := maps.Clone(current.runningAgents)
+				nextRunning[req.AgentID] = maps.Clone(nextRunning[req.AgentID])
+
+				updatedRun := *currentRun
+				updatedRun.Status = req.NodeStatus
+				nextRunning[req.AgentID][req.RunID] = &updatedRun
+
+				a.snapshot.Store(&DaemonSnapshot{
+					agents:            current.agents,
+					runningAgents:     nextRunning,
+					fakerAgentRunList: current.fakerAgentRunList,
+				})
+				fmt.Printf("[STATE CHANGE] Run %s updated to %s\n", req.RunID, req.NodeStatus)
+			}
+		}
+	}
+
+	// FEATURE 3: PERSISTENCE WRITE-HOOK WITH CHRONO-SORTABLE PREFIX INDEX
 	storageKey := fmt.Sprintf("%s:%s:%012d", req.AgentID, req.RunID, sequence)
 	event := NewEventFromSnapshot(req)
 
@@ -115,52 +199,12 @@ func (a *AgentDaemon) processAgentRunSnapshot(req AgentRunSnapshot, sequence int
 	a.notify(*event)
 }
 
-// injectSimulatedSnapshot targets random nodes to generate simulated framework activities.
-func (a *AgentDaemon) injectSimulatedSnapshot() {
-	current := a.snapshot.Load().(*DaemonSnapshot)
+// ============================================================================
+// SEED ENGINE & SIMULATION HEARTBEAT
+// ============================================================================
 
-	if len(current.agents) == 0 {
-		return
-	}
-
-	agentIDs := make([]string, 0, len(current.agents))
-	for id := range current.agents {
-		agentIDs = append(agentIDs, id)
-	}
-
-	randomAgentID := agentIDs[rand.Intn(len(agentIDs))]
-	runs := current.fakerAgentRunList[randomAgentID]
-	if len(runs) == 0 {
-		return
-	}
-	runID := runs[rand.Intn(len(runs))]
-
-	meta := current.agents[randomAgentID]
-	if meta == nil || len(meta.NodeIDList) == 0 {
-		return
-	}
-
-	randomNode := meta.NodeIDList[rand.Intn(len(meta.NodeIDList))]
-	statuses := []string{"THINKING", "EXECUTING_TOOL", "COMPLETE"}
-	randomStatus := statuses[rand.Intn(len(statuses))]
-
-	snapshot := AgentRunSnapshot{
-		AgentID:    randomAgentID,
-		RunID:      runID,
-		NodeID:     randomNode,
-		NodeStatus: randomStatus,
-	}
-
-	select {
-	case a.runSnapshotQueue <- snapshot:
-	default:
-		// Queue saturated; drop frame silently to prevent performance degradation.
-	}
-}
-
-// seedStaticAgents formats baseline configurations on boot.
 func (a *AgentDaemon) seedStaticAgents() {
-	fmt.Println("Seeding static agent configurations...")
+	fmt.Println("Seeding static configurations through unified pathways...")
 
 	defaultAgents := []Agent{
 		{
@@ -183,45 +227,122 @@ func (a *AgentDaemon) seedStaticAgents() {
 		},
 	}
 
-	current := a.snapshot.Load().(*DaemonSnapshot)
-	nextAgents := maps.Clone(current.agents)
-	nextRunning := maps.Clone(current.runningAgents)
-	nextFaker := maps.Clone(current.fakerAgentRunList)
-
 	for _, agent := range defaultAgents {
-		nextAgents[agent.ID] = &agent.Metadata
+		// 1. Route through the standard registration framework
+		a.processAgentRegisterRequest(agent)
 
-		if _, ok := nextRunning[agent.ID]; !ok {
-			nextRunning[agent.ID] = make(map[string]*AgentRunDetail)
-		}
-
-		runID := "run_uuid_10000"
-		nextRunning[agent.ID][runID] = &AgentRunDetail{
+		// 2. Route the baseline structural execution frame through the unified engine
+		runID := "seed_run_10000"
+		runDetail := AgentRunDetail{
 			AgentRunID:      fmt.Sprintf("%s:%s", agent.ID, runID),
-			TaskName:        "SEED_RUN",
-			TaskDescription: fmt.Sprintf("Seed Agent Run for Agent %v", agent.ID),
-			CreatedBy:       "SYSTEM_GENERATE",
+			TaskName:        "SEED_INITIALIZATION",
+			TaskDescription: fmt.Sprintf("System generated verification vector for %s", agent.ID),
+			Status:          "RUNNING",
+			CreatedBy:       "KERNEL_BOOTSTRAP",
 			CreatedAt:       time.Now().UnixMilli(),
 		}
+		a.processAgentRun(runDetail)
 
-		nextFaker[agent.ID] = append(nextFaker[agent.ID], runID)
+		// 3. EVOLVED: Populate your event store and fire live notifications for the seed
+		a.sequence++
+		initialSnapshot := AgentRunSnapshot{
+			AgentID:    agent.ID,
+			RunID:      runID,
+			NodeID:     agent.Metadata.NodeIDList[0], // Dynamically point to the root node
+			NodeStatus: "PENDING",
+			Message:    "Bootstrap checkpoint committed successfully.",
+		}
+		a.processAgentRunSnapshot(initialSnapshot, a.sequence)
+	}
+}
+
+func (a *AgentDaemon) injectSimulatedSnapshot() {
+	current := a.snapshot.Load().(*DaemonSnapshot)
+	if len(current.agents) == 0 {
+		return
 	}
 
-	a.snapshot.Store(&DaemonSnapshot{
-		agents:            nextAgents,
-		runningAgents:     nextRunning,
-		fakerAgentRunList: nextFaker,
-	})
+	agentIDs := make([]string, 0, len(current.agents))
+	for id := range current.agents {
+		agentIDs = append(agentIDs, id)
+	}
+
+	randomAgentID := agentIDs[rand.Intn(len(agentIDs))]
+	runs := current.fakerAgentRunList[randomAgentID]
+	if len(runs) == 0 {
+		return
+	}
+	runID := runs[rand.Intn(len(runs))]
+
+	meta := current.agents[randomAgentID]
+	if meta == nil || len(meta.NodeIDList) == 0 {
+		return
+	}
+
+	randomNode := meta.NodeIDList[rand.Intn(len(meta.NodeIDList))]
+	statuses := []string{
+		"PENDING",
+		"THINKING",
+		"CALLING_TOOL",
+		"AWAITING_INPUT",
+		"RETRYING",
+		"COMPLETE",
+		"FAILED",
+	}
+	randomStatus := statuses[rand.Intn(len(statuses))]
+
+	snapshot := AgentRunSnapshot{
+		AgentID:    randomAgentID,
+		RunID:      runID,
+		NodeID:     randomNode,
+		NodeStatus: randomStatus,
+		Message:    fmt.Sprintf("Simulated trace step executed on node '%s'", randomNode),
+	}
+
+	select {
+	case a.runSnapshotQueue <- snapshot:
+	default:
+		// Drop frame cleanly if channel blocks to safeguard high throughput loops
+	}
 }
 
-// PUBLIC API SURFACE BOUNDARIES (100% Thread-Safe & Lock-Free Read Operations)
+// ============================================================================
+// THREAD-SAFE PUBLIC READ API SURFACE
+// ============================================================================
 
-func (a *AgentDaemon) RegisterAgent(req Agent) {
-	a.registerRequestQueue <- req
+func (a *AgentDaemon) RegisterAgent(agent Agent) {
+	a.registerRequestQueue <- agent
 }
 
-func (a *AgentDaemon) RegisterSnapshot(req AgentRunSnapshot) {
-	a.runSnapshotQueue <- req
+func (a *AgentDaemon) RegisterAgentRun(agentRun AgentRunDetail) {
+	a.registerAgentRunQueue <- agentRun
+}
+
+func (a *AgentDaemon) RegisterSnapshot(snapshot AgentRunSnapshot) {
+	a.runSnapshotQueue <- snapshot
+}
+
+func (a *AgentDaemon) GetAgents() map[string]*AgentMetadata {
+	current := a.snapshot.Load().(*DaemonSnapshot)
+	return maps.Clone(current.agents)
+}
+
+func (a *AgentDaemon) GetAgentRuns(agentID string) []*AgentRunDetail {
+	current := a.snapshot.Load().(*DaemonSnapshot)
+	runs, exists := current.runningAgents[agentID]
+	if !exists {
+		return []*AgentRunDetail{}
+	}
+
+	result := make([]*AgentRunDetail, 0, len(runs))
+	for _, run := range runs {
+		result = append(result, run)
+	}
+	return result
+}
+
+func (a *AgentDaemon) GetAgentRunEvents(agentRunID AgentRunID) []*Event {
+	return a.memTable.Query(agentRunID.String())
 }
 
 func (a *AgentDaemon) Query(param string, last int) []*Event {
@@ -240,32 +361,9 @@ func (a *AgentDaemon) QueryLatest(param string) *Event {
 	return nil
 }
 
-func (a *AgentDaemon) GetAgents() map[string]*AgentMetadata {
-	// LOCK-FREE: Read straight from the current atomic pointer snapshot
-	current := a.snapshot.Load().(*DaemonSnapshot)
-	return maps.Clone(current.agents)
-}
-
-func (a *AgentDaemon) GetAgentRuns(agentID string) []*AgentRunDetail {
-	// LOCK-FREE: Non-blocking isolated range collection reads
-	current := a.snapshot.Load().(*DaemonSnapshot)
-	runs, exists := current.runningAgents[agentID]
-	if !exists {
-		return []*AgentRunDetail{}
-	}
-
-	result := make([]*AgentRunDetail, 0, len(runs))
-	for _, run := range runs {
-		result = append(result, run)
-	}
-	return result
-}
-
-func (a *AgentDaemon) GetAgentRunEvents(agentRunID AgentRunID) []*Event {
-	return a.memTable.Query(agentRunID.String())
-}
-
-// SUBSCRIPTION MECHANICS
+// ============================================================================
+// OBSERVER FAN-OUT MECHANICS
+// ============================================================================
 
 func (a *AgentDaemon) Attach(observer Observer) {
 	a.observersMu.Lock()
@@ -293,8 +391,5 @@ func (a *AgentDaemon) notify(event Event) {
 }
 
 func (a *AgentDaemon) cleanWildCard(param string) string {
-	if strings.HasSuffix(param, "*") {
-		return strings.TrimSuffix(param, "*")
-	}
-	return param
+	return strings.TrimSuffix(param, "*")
 }
