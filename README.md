@@ -193,28 +193,6 @@ curl -X POST "http://localhost:8080/v1/agents/watch" \
 curl -N "http://localhost:8080/v1/agents/sse?clientId=local-client"
 ```
 
-## 🚀 Deployment
-
-This project is configured for deployment on Railway.app using NixPacks.
-
-### Deployment Configuration (`railway.toml`)
-
-```toml
-[build]
-builder = "nixpacks"
-buildCommand = "go build -o out ./cmd/api/main.go"
-
-[deploy]
-startCommand = "./out"
-healthcheckPath = "/health"
-```
-
-### Deploy to Railway
-
-1. Connect your repository to Railway
-2. Railway will automatically detect `railway.toml` and build/deploy accordingly
-3. The service is live at: https://agentic-streamer-api-production.up.railway.app/
-
 ## Event Data Model
 
 Events streamed through SSE follow this structure:
@@ -229,7 +207,7 @@ Events streamed through SSE follow this structure:
 }
 ```
 
-## 🔄 Watch Request Model
+## Watch Request Model
 
 Subscribe to agent updates with:
 
