@@ -1,7 +1,0 @@
-[build]
-builder = "nixpacks"
-buildCommand = "go build -o out ./cmd/api/main.go"
-
-[deploy]
-startCommand = "./out"
-healthcheckPath = "/health"
