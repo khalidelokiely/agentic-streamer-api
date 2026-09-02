@@ -230,8 +230,8 @@ Subscribe to agent updates with:
 ## CORS Configuration
 
 Pre-configured CORS origins:
-- `http://localhost:5173` (local development)
-- `https://agentic-streamer-ui-react.vercel.app` (production UI)
+- `http://localhost:5173` AND `http://localhost:4173` (local development)
+- Further CORS origins can be added using the `ALLOWED_ORIGINS` env key. For multiple origins separate URLS by comma. It'll be parsed and added automatically to Hertz Allowed Origins
 
 Allowed methods: GET, POST, DELETE, OPTIONS
 
