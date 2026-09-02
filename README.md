@@ -41,7 +41,7 @@ A high-performance REST API backend for live agentic updates powered by Go and s
 - **Unique IDs:** [ULID v2](https://github.com/oklog/ulid/v2) - Sortable unique identifiers
 - **Deployment:** Railway.app with NixPacks
 
-## 📡 API Endpoints
+## API Endpoints
 
 All endpoints are prefixed with `/v1/agents`
 
@@ -62,7 +62,7 @@ All endpoints are prefixed with `/v1/agents`
 - `GET /watchers` - Get current watchers and connected clients
 - `GET /health` - Health check endpoint (used by Railway for deployment validation)
 
-## 🔌 API Examples
+## API Examples
 
 ### Get Available Agents
 
@@ -110,7 +110,7 @@ curl "https://agentic-streamer-api-production.up.railway.app/v1/agents/codepal-v
 curl -X DELETE "https://agentic-streamer-api-production.up.railway.app/v1/agents/watch/codepal-v1?clientId=client-123"
 ```
 
-## 🏗️ Project Structure
+## Project Structure
 
 ```
 agentic-streamer-api/
@@ -215,7 +215,7 @@ healthcheckPath = "/health"
 2. Railway will automatically detect `railway.toml` and build/deploy accordingly
 3. The service is live at: https://agentic-streamer-api-production.up.railway.app/
 
-## 📊 Event Data Model
+## Event Data Model
 
 Events streamed through SSE follow this structure:
 
@@ -249,7 +249,7 @@ Subscribe to agent updates with:
 - `agents`: List of target agents to watch
 - `latest_only`: If `true`, only stream events from the latest run; if `false`, stream all events
 
-## 🔐 CORS Configuration
+## CORS Configuration
 
 Pre-configured CORS origins:
 - `http://localhost:5173` (local development)
@@ -257,7 +257,7 @@ Pre-configured CORS origins:
 
 Allowed methods: GET, POST, DELETE, OPTIONS
 
-## 🐛 Key Implementation Details
+## Key Implementation Details
 
 ### Buffered Channels
 
@@ -283,22 +283,22 @@ ms := ulid.Timestamp(time.Now())
 ulid, err := ulid.New(ms, entropy)
 ```
 
-## 🤝 Integrations
+## Integrations
 
 This API is designed to work with:
 - **Frontend:** [Agentic Streamer UI](https://agentic-streamer-ui-react.vercel.app) (React)
 - **Agent Framework:** LangChain, AutoGen, or custom agent implementations
 - **Event Sources:** Currently seeds demo events; push-based ingestion coming soon (see Future Enhancements)
 
-## 📝 License
+## License
 
 This project is open source and available on GitHub.
 
-## 🤔 Questions or Issues?
+## Questions or Issues?
 
 For bugs, feature requests, or questions, please open an issue on [GitHub](https://github.com/khalidelokiely/agentic-streamer-api/issues).
 
-## 🎯 Future Enhancements
+## Future Enhancements
 
 - [ ] **Push-based Event Ingestion Endpoint** - Create a dedicated endpoint for external services (LangChain, AutoGen, etc.) to push agent run events into the streamer instead of relying on seeded demo data
 - [ ] Improve some lock mechanisms in the AgentDaemon
